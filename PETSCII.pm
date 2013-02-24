@@ -14,11 +14,23 @@ Text::Convert::PETSCII - ASCII/PETSCII text converter
   # Convert a PETSCII string to an ASCII string:
   my $ascii_string = petscii_to_ascii($petscii_string);
 
+  # Convert CBM screen codes to a PETSCII string:
+  my $petscii_string = screen_codes_to_petscii($screen_codes);
+
+  # Convert a PETSCII string to CBM screen codes:
+  my $screen_codes = petscii_to_screen_codes($petscii_string);
+
   # Set mode for writing PETSCII character's representation to a file handle:
   set_petscii_write_mode($write_mode);
 
   # Write PETSCII single character's textual representation to a file handle:
   write_petscii_char($file_handle, $petscii_char);
+
+  # Validate whether given PETSCII string text may normally be printed out:
+  my $is_printable = is_printable_petscii_string($petscii_string);
+
+  # Validate whether given text may be considered a valid PETSCII string:
+  my $is_valid = is_valid_petscii_string($text_string);
 
 =head1 DESCRIPTION
 
@@ -32,11 +44,13 @@ use base qw(Exporter);
 our %EXPORT_TAGS = ();
 $EXPORT_TAGS{'convert'} = [ qw(&ascii_to_petscii &petscii_to_ascii) ];
 $EXPORT_TAGS{'display'} = [ qw(&set_petscii_write_mode &write_petscii_char) ];
-$EXPORT_TAGS{'all'} = [ @{$EXPORT_TAGS{'convert'}}, @{$EXPORT_TAGS{'display'}} ];
+$EXPORT_TAGS{'screen'} = [ qw(&screen_codes_to_petscii &petscii_to_screen_codes) ];
+$EXPORT_TAGS{'validate'} = [ qw(&is_printable_petscii_string &is_valid_petscii_string) ];
+$EXPORT_TAGS{'all'} = [ @{$EXPORT_TAGS{'convert'}}, @{$EXPORT_TAGS{'display'}}, @{$EXPORT_TAGS{'screen'}}, @{$EXPORT_TAGS{'validate'}} ];
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 our @EXPORT = qw();
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use Carp qw/carp croak/;
 use Data::Dumper;
@@ -108,6 +122,140 @@ sub petscii_to_ascii {
         $position++;
     }
     return $str_ascii;
+}
+
+=head2 screen_codes_to_petscii
+
+Convert CBM screen codes to a PETSCII string:
+
+  my $petscii_string = screen_codes_to_petscii($screen_codes);
+
+Input screen codes are expected to be a scalar value that is handled as a stream of bytes. And so is a returned value.
+
+=cut
+
+sub screen_codes_to_petscii {
+    my ($screen_codes) = @_;
+
+    my $reverse_flag = 0;
+
+    my $petscii_string;
+
+    for my $screen_char (split //, $screen_codes) {
+
+        my $screen_code = ord ($screen_char);
+
+        # RVS ON:
+        if ($screen_code & 0x80) {
+            unless ($reverse_flag) {
+                $reverse_flag = 1;
+                $petscii_string .= chr (0x12);
+            }
+            $screen_code ^= 0x80;
+        }
+        # RVS OFF:
+        else {
+            if ($reverse_flag) {
+                $reverse_flag = 0;
+                $petscii_string .= chr (0x92);
+            }
+        }
+
+        # $20 .. $3f ("SPACE ($20)" .. "?"):
+        my $petscii_byte = $screen_code;
+        # $00 .. $1f ("@" .. "left arrow"):
+        if ($petscii_byte >= 0x00 && $petscii_byte < 0x20) {
+            $petscii_byte += 0x40;
+        }
+        # $40 .. $5f ("horizontal line" .. "top-right triangle"):
+        elsif ($petscii_byte >= 0x40 && $petscii_byte < 0x60) {
+            $petscii_byte += 0x20;
+        }
+        # $60 .. $7f ("SPACE ($60)" .. "racing square"):
+        elsif ($petscii_byte >= 0x60 && $petscii_byte < 0x80) {
+            $petscii_byte += 0x40;
+        }
+
+        $petscii_string .= chr ($petscii_byte);
+    }
+
+    return $petscii_string;
+}
+
+=head2 petscii_to_screen_codes
+
+Convert a PETSCII string to CBM screen codes:
+
+  my $screen_codes = petscii_to_screen_codes($petscii_string);
+
+Input PETSCII string is expected to be a scalar value that is handled as a stream of bytes. And so is a returned value.
+
+=cut
+
+sub petscii_to_screen_codes {
+    my ($petscii_string) = @_;
+
+    my $reverse_flag = 0x00;
+
+    my $screen_codes;
+
+    for my $petscii_char (split //, $petscii_string) {
+
+        my $petscii_byte = ord ($petscii_char);
+
+        # RVS ON:
+        if ($petscii_byte == 0x12) {
+            $reverse_flag = 0x80;
+            next;
+        }
+
+        # RVS OFF:
+        if ($petscii_byte == 0x92) {
+            $reverse_flag = 0x00;
+            next;
+        }
+
+        # $c0 .. $df are the same as $60 .. $7f
+        if ($petscii_byte >= 0xc0 && $petscii_byte < 0xe0) {
+            $petscii_byte -= 0x60;
+        }
+        # $e0 .. $fe are the same as $a0 .. $be
+        elsif ($petscii_byte >= 0xe0 && $petscii_byte < 0xff) {
+            $petscii_byte -= 0x40;
+        }
+        # $ff is the same as $7e
+        elsif ($petscii_byte == 0xff) {
+            $petscii_byte = 0x7e;
+        }
+        # $95 .. $9b are the same as $75 .. $7b
+        elsif ($petscii_byte >= 0x95 && $petscii_byte < 0x9c) {
+            $petscii_byte -= 0x20;
+        }
+
+        # Skip all non-printable characters:
+        if ($petscii_byte >= 0x00 && $petscii_byte < 0x20 || $petscii_byte >= 0x80 && $petscii_byte < 0xa0) {
+            next;
+        }
+
+        # $20 .. $3f ("SPACE ($20)" .. "?"):
+        my $screen_code = $petscii_byte;
+        # $40 .. $5f ("@" .. "left arrow"):
+        if ($screen_code >= 0x40 && $screen_code < 0x60) {
+            $screen_code -= 0x40;
+        }
+        # $60 .. $7f ("horizontal line" .. "top-right triangle"):
+        elsif ($screen_code >= 0x60 && $screen_code < 0x80) {
+            $screen_code -= 0x20;
+        }
+        # $a0 .. $bf ("SPACE ($A0)" .. "racing square"):
+        elsif ($screen_code >= 0xa0 && $screen_code < 0xc0) {
+            $screen_code -= 0x40;
+        }
+
+        $screen_codes .= chr ($screen_code | $reverse_flag);
+    }
+
+    return $screen_codes;
 }
 
 =head2 set_petscii_write_mode
@@ -204,6 +352,55 @@ sub write_petscii_char {
     return;
 }
 
+=head2 is_printable_petscii_string
+
+Validate whether given PETSCII string text may normally be printed out:
+
+  my $is_printable = is_printable_petscii_string($petscii_string);
+
+Returns true value upon successful validation, and false otherwise. False value will also be immediately returned when text string that is given as an argument is not a PETSCII string at all.
+
+=cut
+
+sub is_printable_petscii_string {
+    my ($text_string) = @_;
+
+    return 0 unless is_valid_petscii_string($text_string);
+
+    return 1 if length $text_string == 0;
+
+    unless ($text_string =~ m/^[^\x20-\x7f\xa0-\xff]*$/g) {
+        return 1;
+    }
+
+    return 0;
+}
+
+=head2 is_valid_petscii_string
+
+Validate whether given text may be considered a valid PETSCII string:
+
+  my $is_valid = is_valid_petscii_string($text_string);
+
+Returns true value upon successful validation, and false otherwise.
+
+=cut
+
+sub is_valid_petscii_string {
+    my ($text_string) = @_;
+
+    return 0 unless defined $text_string;
+    return 0 if ref $text_string;
+
+    return 1 if length $text_string == 0;
+
+    unless ($text_string =~ m/^[^\x00-\xff]*$/g) {
+        return 1;
+    }
+
+    return 0;
+}
+
 # TODO: Consider adding this method to the public interface of current package:
 sub _petscii_to_screen_code {
     my ($num_petscii) = @_;
@@ -251,7 +448,13 @@ C<convert> tag adds L</ascii_to_petscii> and L</petscii_to_ascii> subroutines to
 C<display> tag adds L</set_petscii_write_mode> and L</write_petscii_char> subroutines to the list of symbols to be imported into the caller's namespace
 
 =item *
-C<all> tag adds all subroutines listed by C<convert> and C<display> tags to the list of exported symbols
+C<screen> tag adds L</screen_codes_to_petscii> and </petscii_to_screen_codes> subroutines to the list of symbols to be imported into the caller's namespace
+
+=item *
+C<validate> tag adds L</is_printable_petscii_string> and </is_valid_petscii_string> subroutines to the list of symbols to be imported into the caller's namespace
+
+=item *
+C<all> tag adds all subroutines listed by C<convert>, C<display>, C<screen>, and C<validate> tags to the list of exported symbols
 
 =back
 
@@ -261,7 +464,7 @@ Pawel Krol, E<lt>pawelkrol@cpan.orgE<gt>.
 
 =head1 VERSION
 
-Version 0.03 (2013-02-17)
+Version 0.04 (2013-02-24)
 
 =head1 COPYRIGHT AND LICENSE
 
